@@ -33,7 +33,7 @@ class NoFilter(Filter):
         pass
 
     def __call__(self, x, update=True):
-        return np.asarray(x, dtype = np.float64)
+        return np.asarray(x, dtype=np.float64)
 
     def update(self, other, *args, **kwargs):
         pass
@@ -66,15 +66,13 @@ class NoFilter(Filter):
         return 1
 
 
-
 # http://www.johndcook.com/blog/standard_deviation/
 class RunningStat(object):
-
     def __init__(self, shape=None):
         self._n = 0
-        self._M = np.zeros(shape, dtype = np.float64)
-        self._S = np.zeros(shape,  dtype = np.float64)
-        self._M2 = np.zeros(shape,  dtype = np.float64)
+        self._M = np.zeros(shape, dtype=np.float64)
+        self._S = np.zeros(shape, dtype=np.float64)
+        self._M2 = np.zeros(shape, dtype=np.float64)
 
     def copy(self):
         other = RunningStat()
@@ -86,8 +84,9 @@ class RunningStat(object):
     def push(self, x):
         x = np.asarray(x)
         # Unvectorized update of the running statistics.
-        assert x.shape == self._M.shape, ("x.shape = {}, self.shape = {}"
-                                          .format(x.shape, self._M.shape))
+        assert x.shape == self._M.shape, "x.shape = {}, self.shape = {}".format(
+            x.shape, self._M.shape
+        )
         n1 = self._n
         self._n += 1
         if self._n == 1:
@@ -97,7 +96,6 @@ class RunningStat(object):
             deltaM2 = np.square(x) - self._M2
             self._M[...] += delta / self._n
             self._S[...] += delta * delta * n1 / self._n
-            
 
     def update(self, other):
         n1 = self._n
@@ -112,8 +110,9 @@ class RunningStat(object):
         self._S = S
 
     def __repr__(self):
-        return '(n={}, mean_mean={}, mean_std={})'.format(
-            self.n, np.mean(self.mean), np.mean(self.std))
+        return "(n={}, mean_mean={}, mean_std={})".format(
+            self.n, np.mean(self.mean), np.mean(self.std)
+        )
 
     @property
     def n(self):
@@ -150,8 +149,8 @@ class MeanStdFilter(Filter):
 
         self.buffer = RunningStat(shape)
 
-        self.mean = np.zeros(shape, dtype = np.float64)
-        self.std = np.ones(shape, dtype = np.float64)
+        self.mean = np.zeros(shape, dtype=np.float64)
+        self.std = np.ones(shape, dtype=np.float64)
 
     def clear_buffer(self):
         self.buffer = RunningStat(self.shape)
@@ -170,7 +169,7 @@ class MeanStdFilter(Filter):
         self.rs.update(other.buffer)
         if copy_buffer:
             self.buffer = other.buffer.copy()
-        return 
+        return
 
     def copy(self):
         """Returns a copy of Filter."""
@@ -196,7 +195,7 @@ class MeanStdFilter(Filter):
         return
 
     def __call__(self, x, update=True):
-        x = np.asarray(x, dtype = np.float64)
+        x = np.asarray(x, dtype=np.float64)
         if update:
             if len(x.shape) == len(self.rs.shape) + 1:
                 # The vectorized case.
@@ -217,29 +216,28 @@ class MeanStdFilter(Filter):
         self.mean = self.rs.mean
         self.std = self.rs.std
 
-        # Set values for std less than 1e-7 to +inf to avoid 
+        # Set values for std less than 1e-7 to +inf to avoid
         # dividing by zero. State elements with zero variance
-        # are set to zero as a result. 
-        self.std[self.std < 1e-7] = float("inf") 
+        # are set to zero as a result.
+        self.std[self.std < 1e-7] = float("inf")
         return
 
     def get_stats(self):
         return self.rs.mean, (self.rs.std + 1e-8)
 
     def __repr__(self):
-        return 'MeanStdFilter({}, {}, {}, {}, {}, {})'.format(
-            self.shape, self.demean,
-            self.rs, self.buffer)
+        return "MeanStdFilter({}, {}, {}, {}, {}, {})".format(
+            self.shape, self.demean, self.rs, self.buffer
+        )
 
-    
-def get_filter(filter_config, shape = None):
+
+def get_filter(filter_config, shape=None):
     if filter_config == "MeanStdFilter":
         return MeanStdFilter(shape)
     elif filter_config == "NoFilter":
         return NoFilter()
     else:
-        raise Exception("Unknown observation_filter: " +
-                        str(filter_config))
+        raise Exception("Unknown observation_filter: " + str(filter_config))
 
 
 def test_running_stat():

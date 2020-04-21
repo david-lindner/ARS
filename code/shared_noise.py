@@ -4,6 +4,7 @@
 import ray
 import numpy as np
 
+
 @ray.remote
 def create_shared_noise():
     """
@@ -18,14 +19,14 @@ def create_shared_noise():
 
 
 class SharedNoiseTable(object):
-    def __init__(self, noise, seed = 11):
+    def __init__(self, noise, seed=11):
 
         self.rg = np.random.RandomState(seed)
         self.noise = noise
         assert self.noise.dtype == np.float64
 
     def get(self, i, dim):
-        return self.noise[i:i + dim]
+        return self.noise[i : i + dim]
 
     def sample_index(self, dim):
         return self.rg.randint(0, len(self.noise) - dim + 1)
