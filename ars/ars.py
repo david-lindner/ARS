@@ -10,13 +10,14 @@ import time
 import os
 import numpy as np
 import gym
-import logz
 import ray
-import utils
-import optimizers
-from policies import *
 import socket
-from shared_noise import *
+
+import ars.optimizers
+import ars.utils
+import ars.logz
+from ars.policies import *
+from ars.shared_noise import *
 
 
 @ray.remote
@@ -28,6 +29,7 @@ class Worker(object):
     def __init__(
         self,
         env_seed,
+        env=None,
         env_name="",
         policy_params=None,
         deltas=None,
@@ -35,8 +37,11 @@ class Worker(object):
         delta_std=0.02,
     ):
 
-        # initialize OpenAI environment for each worker
-        self.env = gym.make(env_name)
+        if env is None:
+            # initialize OpenAI environment for each worker
+            self.env = gym.make(env_name)
+        else:
+            self.env = env
         self.env.seed(env_seed)
 
         # each worker gets access to the shared noise table
@@ -74,7 +79,11 @@ class Worker(object):
         ob = self.env.reset()
         for i in range(rollout_length):
             action = self.policy.act(ob)
-            ob, reward, done, _ = self.env.step(action)
+            try:
+                ob, reward, done, _ = self.env.step(action)
+            except:
+                print("action", action)
+                raise
             steps += 1
             total_reward += reward - shift
             if done:
@@ -102,7 +111,7 @@ class Worker(object):
                 # for evaluation we do not shift the rewards (shift = 0) and we use the
                 # default rollout length (1000 for the MuJoCo locomotion tasks)
                 reward, r_steps = self.rollout(
-                    shift=0.0, rollout_length=self.env.spec.timestep_limit
+                    shift=0.0, rollout_length=self.env.spec.max_episode_steps
                 )
                 rollout_rewards.append(reward)
 
@@ -154,6 +163,7 @@ class ARSLearner(object):
 
     def __init__(
         self,
+        env=None,
         env_name="HalfCheetah-v1",
         policy_params=None,
         num_workers=32,
@@ -168,13 +178,18 @@ class ARSLearner(object):
         seed=123,
     ):
 
-        logz.configure_output_dir(logdir)
-        logz.save_params(params)
+        ars.logz.configure_output_dir(logdir)
+        ars.logz.save_params(params)
 
-        env = gym.make(env_name)
+        if env is None:
+            env = gym.make(env_name)
+
+        if len(env.action_space.shape) == 0:
+            self.action_size = 1
+        else:
+            self.action_size = env.action_space.shape[0]
 
         self.timesteps = 0
-        self.action_size = env.action_space.shape[0]
         self.ob_size = env.observation_space.shape[0]
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
@@ -199,6 +214,7 @@ class ARSLearner(object):
         self.workers = [
             Worker.remote(
                 seed + 7 * i,
+                env=env,
                 env_name=env_name,
                 policy_params=policy_params,
                 deltas=deltas_id,
@@ -216,10 +232,10 @@ class ARSLearner(object):
             raise NotImplementedError
 
         # initialize optimization algorithm
-        self.optimizer = optimizers.SGD(self.w_policy, self.step_size)
+        self.optimizer = ars.optimizers.SGD(self.w_policy, self.step_size)
         print("Initialization of ARS complete.")
 
-    def aggregate_rollouts(self, num_rollouts=None, evaluate=False):
+    def aggregate_rollouts(self, num_rollouts=None, evaluate=False, log=True):
         """
         Aggregate update step from rollouts generated in parallel.
         """
@@ -274,10 +290,11 @@ class ARSLearner(object):
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype=np.float64)
 
-        print("Maximum reward of collected rollouts:", rollout_rewards.max())
         t2 = time.time()
 
-        print("Time to generate rollouts:", t2 - t1)
+        if log:
+            print("Maximum reward of collected rollouts:", rollout_rewards.max())
+            print("Time to generate rollouts:", t2 - t1)
 
         if evaluate:
             return rollout_rewards
@@ -301,55 +318,61 @@ class ARSLearner(object):
 
         t1 = time.time()
         # aggregate rollouts to form g_hat, the gradient used to compute SGD step
-        g_hat, count = utils.batched_weighted_sum(
+        g_hat, count = ars.utils.batched_weighted_sum(
             rollout_rewards[:, 0] - rollout_rewards[:, 1],
             (self.deltas.get(idx, self.w_policy.size) for idx in deltas_idx),
             batch_size=500,
         )
         g_hat /= deltas_idx.size
         t2 = time.time()
-        print("time to aggregate rollouts", t2 - t1)
+        if log:
+            print("time to aggregate rollouts", t2 - t1)
         return g_hat
 
-    def train_step(self):
+    def train_step(self, log=True):
         """
         Perform one update step of the policy weights.
         """
 
-        g_hat = self.aggregate_rollouts()
-        print("Euclidean norm of update step:", np.linalg.norm(g_hat))
+        g_hat = self.aggregate_rollouts(log=log)
+        if log:
+            print("Euclidean norm of update step:", np.linalg.norm(g_hat))
         self.w_policy -= self.optimizer._compute_step(g_hat).reshape(
             self.w_policy.shape
         )
         return
 
-    def train(self, num_iter):
+    def train(self, num_iter, callback=None, log=True):
 
         start = time.time()
         for i in range(num_iter):
 
             t1 = time.time()
-            self.train_step()
+            self.train_step(log=log)
             t2 = time.time()
-            print("total time of one step", t2 - t1)
-            print("iter ", i, " done")
+
+            if log:
+                print("total time of one step", t2 - t1)
+                print("iter ", i, " done")
 
             # record statistics every 10 iterations
             if (i + 1) % 10 == 0:
-
-                rewards = self.aggregate_rollouts(num_rollouts=100, evaluate=True)
                 w = ray.get(self.workers[0].get_weights_plus_stats.remote())
                 np.savez(self.logdir + "/lin_policy_plus", w)
 
-                print(sorted(self.params.items()))
-                logz.log_tabular("Time", time.time() - start)
-                logz.log_tabular("Iteration", i + 1)
-                logz.log_tabular("AverageReward", np.mean(rewards))
-                logz.log_tabular("StdRewards", np.std(rewards))
-                logz.log_tabular("MaxRewardRollout", np.max(rewards))
-                logz.log_tabular("MinRewardRollout", np.min(rewards))
-                logz.log_tabular("timesteps", self.timesteps)
-                logz.dump_tabular()
+                if log:
+                    rewards = self.aggregate_rollouts(
+                        num_rollouts=100, evaluate=True, log=log
+                    )
+                    print(sorted(self.params.items()))
+                    ars.logz.log_tabular("Time", time.time() - start)
+                    ars.logz.log_tabular("Iteration", i + 1)
+                    ars.logz.log_tabular("AverageReward", np.mean(rewards))
+                    ars.logz.log_tabular("StdRewards", np.std(rewards))
+                    ars.logz.log_tabular("MaxRewardRollout", np.max(rewards))
+                    ars.logz.log_tabular("MinRewardRollout", np.min(rewards))
+                    ars.logz.log_tabular("timesteps", self.timesteps)
+                    ars.logz.dump_tabular()
 
             t1 = time.time()
             # get statistics from all workers
@@ -375,8 +398,12 @@ class ARSLearner(object):
             # waiting for increment of all workers
             ray.get(increment_filters_ids)
             t2 = time.time()
-            print("Time to sync statistics:", t2 - t1)
 
+            if log:
+                print("Time to sync statistics:", t2 - t1)
+
+            if callback is not None:
+                callback(locals(), globals())
         return
 
 
@@ -446,8 +473,9 @@ if __name__ == "__main__":
     # for ARS V1 use filter = 'NoFilter'
     parser.add_argument("--filter", type=str, default="MeanStdFilter")
 
-    local_ip = socket.gethostbyname(socket.gethostname())
-    ray.init(redis_address=local_ip + ":6379")
+    # local_ip = socket.gethostbyname(socket.gethostname())
+    # ray.init(redis_address=local_ip + ":6379")
+    ray.init()
 
     args = parser.parse_args()
     params = vars(args)

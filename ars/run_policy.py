@@ -1,6 +1,6 @@
 """
 
-Code to load a policy and generate rollout data. Adapted from https://github.com/berkeleydeeprlcourse. 
+Code to load a policy and generate rollout data. Adapted from https://github.com/berkeleydeeprlcourse.
 Example usage:
     python run_policy.py ../trained_policies/Humanoid-v1/policy_reward_11600/lin_policy_plus.npz Humanoid-v1 --render \
             --num_rollouts 20
@@ -22,8 +22,9 @@ def main():
     args = parser.parse_args()
 
     print("loading and building expert policy")
-    lin_policy = np.load(args.expert_policy_file)
-    lin_policy = lin_policy.items()[0][1]
+    lin_policy = np.load(args.expert_policy_file, allow_pickle=True)
+    # lin_policy = lin_policy.items()[0][1]
+    lin_policy = [v for v in lin_policy.values()][0]
 
     M = lin_policy[0]
     # mean and std of state vectors estimated online by ARS.
@@ -31,6 +32,11 @@ def main():
     std = lin_policy[2]
 
     env = gym.make(args.envname)
+
+    env.reset()
+    env.render()
+    # env.viewer.cam.trackbodyid = 0
+    # env.viewer.cam.fixedcamid = 0
 
     returns = []
     observations = []
@@ -52,9 +58,10 @@ def main():
             if args.render:
                 env.render()
             if steps % 100 == 0:
-                print("%i/%i" % (steps, env.spec.timestep_limit))
-            if steps >= env.spec.timestep_limit:
+                print("%i/%i" % (steps, env.spec.max_episode_steps))
+            if steps >= env.spec.max_episode_steps:
                 break
+        print("return", totalr)
         returns.append(totalr)
 
     print("returns", returns)
